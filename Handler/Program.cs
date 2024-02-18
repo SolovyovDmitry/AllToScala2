@@ -1,6 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
 
 namespace Handler;
 
@@ -44,12 +43,17 @@ class Handler: IHandler
   {
     ConcurrentStack<Task> eventsStack = new();
     var thread = new Thread(() => RetrieveData(cancellationToken).Start());
+    
+    _logger.LogInformation("Starting to retrieve data from consumer");
+    
     thread.Start();
 
     while (true)
     {
       if (cancellationToken.IsCancellationRequested)
       {
+        _logger.LogWarning("Cancellation requested - stopping to handle publishing");
+        
         break;
       }
       
@@ -64,10 +68,17 @@ class Handler: IHandler
 
     async Task SendData(Address address, Payload payload)
     {
+      _logger.LogInformation("Sending data to {address}", address);
+      
       var sendResult = await _publisher.SendData(address, payload);
 
       if (sendResult == SendResult.Rejected)
       {
+        _logger.LogInformation(
+          "Publishing message to {address} was rejected. Retrying in {timeout}",
+          address,
+          Timeout);
+        
         await Task.Delay(Timeout, cancellationToken);
         eventsStack.Push(SendData(address, payload));
       }
@@ -79,12 +90,16 @@ class Handler: IHandler
       {
         if (ct.IsCancellationRequested)
         {
+          _logger.LogWarning("Cancellation requested. Stopping to retrieve data");
+          
           break;
         }
         
         Event data = await _consumer.ReadData();
         foreach (Address address in data.Recipients)
         {
+          _logger.LogInformation("Retrieved data from {address}. Starting to publish", address);
+          
           eventsStack.Push(SendData(address, data.Payload));
         }
       }
@@ -93,7 +108,13 @@ class Handler: IHandler
 }
 
 record Payload(string Origin, byte[] Data);
-record Address(string DataCenter, string NodeId);
+record Address(string DataCenter, string NodeId)
+{
+  public override string ToString()
+  {
+    return $"Data center {DataCenter} with Node {NodeId}";
+  }
+}
 record Event(IReadOnlyCollection<Address> Recipients, Payload Payload);
 
 enum SendResult
