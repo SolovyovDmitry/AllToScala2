@@ -1,4 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Collections.Immutable;
 
 namespace Handler;
 
@@ -40,9 +42,53 @@ class Handler: IHandler
    
   public Task PerformOperation(CancellationToken cancellationToken)
   {
-    //TODO: place code here
-     
+    ConcurrentStack<Task> eventsStack = new();
+    var thread = new Thread(() => RetrieveData(cancellationToken).Start());
+    thread.Start();
+
+    while (true)
+    {
+      if (cancellationToken.IsCancellationRequested)
+      {
+        break;
+      }
+      
+      if (eventsStack.TryPop(out var sendingDataTask))
+      {
+        var sendDataThread = new Thread(() => sendingDataTask.Start());
+        sendDataThread.Start();
+      }
+    }
+
     return Task.CompletedTask;
+
+    async Task SendData(Address address, Payload payload)
+    {
+      var sendResult = await _publisher.SendData(address, payload);
+
+      if (sendResult == SendResult.Rejected)
+      {
+        await Task.Delay(Timeout, cancellationToken);
+        eventsStack.Push(SendData(address, payload));
+      }
+    }
+
+    async Task RetrieveData(CancellationToken ct)
+    {
+      while (true)
+      {
+        if (ct.IsCancellationRequested)
+        {
+          break;
+        }
+        
+        Event data = await _consumer.ReadData();
+        foreach (Address address in data.Recipients)
+        {
+          eventsStack.Push(SendData(address, data.Payload));
+        }
+      }
+    }
   }
 }
 
